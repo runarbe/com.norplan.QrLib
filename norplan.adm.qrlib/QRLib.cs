@@ -8,6 +8,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Net.NetworkInformation;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
@@ -19,7 +20,43 @@ namespace norplan.adm.qrlib
     {
         public static Shapefile Districts = null;
 
+        public static List<string> QRCodes = null;
+
         public static StreamWriter LogFile = null;
+
+        public static void ResetDistrict()
+        {
+            Districts = null;
+        }
+
+        public static void ResetQRCodes()
+        {
+            QRCodes = null;
+        }
+
+        public static bool HasInternetConnection()
+        {
+            Ping myPing = new Ping();
+            String host = "google.com";
+            byte[] buffer = new byte[32];
+            int timeout = 1000;
+            PingOptions pingOptions = new PingOptions();
+            try
+            {
+                PingReply reply = myPing.Send(host, timeout, buffer, pingOptions);
+                if (reply.Status == IPStatus.Success)
+                {
+                    return true;
+                }
+
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+
+            return false;
+        }
 
         public static RetObj DownloadLandingPage(this string pQRCode)
         {
@@ -45,35 +82,46 @@ namespace norplan.adm.qrlib
             return mRetObj;
         }
 
-        public static string TestQRCode(this string pQRCode, string pDistrictsShapefile, bool pCheckOnline = true, double pX = double.NaN, double pY = double.NaN)
+        public static QrTestResult TestQRCode(this string qrCode, string districtsShapefile, bool checkOnline = true, double xCoord = double.NaN, double yCoord = double.NaN, bool checkForDuplicates = false)
         {
-            var mSb = new StringBuilder();
-            if (String.IsNullOrEmpty(pQRCode))
+            var qrTestResult = new QrTestResult();
+
+            if (QRCodes == null && checkForDuplicates == true)
             {
-                return null;
+                QRCodes = new List<string>();
+            }
+
+            if (String.IsNullOrEmpty(qrCode))
+            {
+                qrTestResult.AddMessage("No QR-code to test: " + qrCode);
+                return qrTestResult;
             }
 
             if (Districts == null)
             {
-
-                mSb.AppendLine("Loading districts from Shapefile (once per session): " + pDistrictsShapefile);
-                Districts = Shapefile.OpenFile(pDistrictsShapefile);
+                qrTestResult.AddMessage("Loading districts from Shapefile (once per session): " + districtsShapefile);
+                Districts = Shapefile.OpenFile(districtsShapefile);
             }
 
             string mBaseURL, mMunicipalityAbbreviation, mAreaAbbreviation = "", mRoadID, mSignType, mAUSNumber;
 
-            mSb.AppendLine("Decoded QR code content: " + pQRCode);
+            qrTestResult.AddMessage("Decoded QR code content: " + qrCode);
 
-            var mRegex = Regex.Match(pQRCode, @"http://([a-z\.]*)/([A-Za-z]*)/([A-Za-z]*)/([0-9]*)/([a-zA-Z0-9]*)/([0-9]*)$");
+            qrTestResult.QrCode = qrCode;
+
+            var mRegex = Regex.Match(qrCode, @"http://([a-z\.]*)/([A-Za-z]*)/([A-Za-z]*)/([0-9]*)/([a-zA-Z0-9]*)/([0-9]*)$");
 
             if (mRegex.Groups.Count != 7)
             {
-                mSb.AppendLine("Error: QR code has wrong structure for ANS sign: " + (mRegex.Groups.Count - 1) + " parts, should be 6");
+                qrTestResult.AddMessage("Error: QR code has wrong structure for ANS sign: " + (mRegex.Groups.Count - 1) + " parts, should be 6");
+                qrTestResult.StructureOk = false;
+                qrTestResult.SignType = QrTestResult.TypeOfSign.Unknown;
             }
             else
             {
-                mSb.AppendLine("Info: QR code has correct structure for ANS sign");
-
+                qrTestResult.AddMessage("Info: QR code has correct structure for ANS sign");
+                qrTestResult.StructureOk = true;
+                qrTestResult.SignType = QrTestResult.TypeOfSign.AddressUnitNumber;
                 mBaseURL = mRegex.Groups[1].ToString();
                 mMunicipalityAbbreviation = mRegex.Groups[2].ToString();
                 mAreaAbbreviation = mRegex.Groups[3].ToString();
@@ -81,46 +129,83 @@ namespace norplan.adm.qrlib
                 mSignType = mRegex.Groups[5].ToString();
                 mAUSNumber = mRegex.Groups[6].ToString();
             }
-
-            if (!pQRCode.StartsWith("http://myabudhabi.net/adm"))
+            
+            // Check for existence of QR-code in processed batch (or batch + all, if loaded from myabudhabi.net)
+            if (checkForDuplicates == true && QRCodes.Contains(qrCode))
             {
-                mSb.AppendLine("Error: base URL or municipality");
+                qrTestResult.AddMessage("QR-code already exists (duplicate): " + qrCode);
+                qrTestResult.IsDuplicate = true;
             }
             else
             {
-                mSb.AppendLine("Info: URL part is ok");
+                QRCodes.Add(qrCode);
+                qrTestResult.IsDuplicate = false;
             }
 
-            if (pQRCode.Contains(" "))
+            // Check for correct start of QR code
+            if (!qrCode.StartsWith("http://myabudhabi.net/adm"))
             {
-                mSb.AppendLine("Error: QR Code contains spaces");
+                qrTestResult.AddMessage("Error: base URL or municipality");
+                qrTestResult.UriOk = false;
             }
             else
             {
-                mSb.AppendLine("Info: Contains no spaces");
+                qrTestResult.AddMessage("Info: URL part is ok");
+                qrTestResult.UriOk = true;
             }
+
+            // Check if codes contains spaces
+            if (qrCode.Contains(" "))
+            {
+                qrTestResult.AddMessage("Error: QR Code contains spaces");
+                qrTestResult.SpacesOk = false;
+            }
+            else
+            {
+                qrTestResult.AddMessage("Info: Contains no spaces");
+                qrTestResult.SpacesOk = true;
+            }
+
+            // Check if code exists on myabudhabi.net
             MyAbuDhabiNetResponse mResponse = null;
-            if (pCheckOnline)
+            if (checkOnline)
             {
-                mResponse = pQRCode.DownloadLandingPage().Data as MyAbuDhabiNetResponse;
-                if (mResponse == null || mResponse.status != "success")
+                if (HasInternetConnection())
                 {
-                    mSb.AppendLine("Notice: Either the QR-code does not exist on myabudhabi.net or there is a problem with the Internet connection");
+                    mResponse = qrCode.DownloadLandingPage().Data as MyAbuDhabiNetResponse;
+                    if (mResponse == null || mResponse.status != "success")
+                    {
+                        qrTestResult.AddMessage("Notice: The QR-code does not exist on myabudhabi.net");
+                        qrTestResult.IsOnline = QrTestResult.OnlineStatus.Unavailable;
+                    }
+                    else
+                    {
+                        qrTestResult.AddMessage(String.Format("Info: Exists on myabudhabi.net (Longitude: {0}/Latitude: {1}){2}",
+                            mResponse.x,
+                            mResponse.y,
+                            Environment.NewLine));
+                        qrTestResult.IsOnline = QrTestResult.OnlineStatus.Available;
+                    }
+
                 }
                 else
                 {
-                    mSb.AppendFormat("Info: Exists on myabudhabi.net (Longitude: {0}/Latitude: {1}){2}",
-                        mResponse.x,
-                        mResponse.y,
-                        Environment.NewLine);
+                    qrTestResult.AddMessage("Either the computer is not connected to the Internet or there is a problem with the connection");
+                    qrTestResult.IsOnline = QrTestResult.OnlineStatus.Unknown;
                 }
             }
+            else
+            {
+                qrTestResult.IsOnline = QrTestResult.OnlineStatus.Unknown;
+            }
 
+            // Check if inside district
             Point mPointGeom = null;
 
-            if (pX != double.NaN || pY != double.NaN)
+            if (xCoord != double.NaN || yCoord != double.NaN)
             {
-                mPointGeom = new Point(pX, pY);
+                mPointGeom = new Point(xCoord, yCoord);
+                qrTestResult.HasCoordinates = true;
             }
             else if (mResponse != null)
             {
@@ -128,7 +213,8 @@ namespace norplan.adm.qrlib
 
                 if (!double.TryParse(mResponse.x, out mX) || !double.TryParse(mResponse.y, out mY))
                 {
-                    mSb.AppendLine("Notice: Coordinate values could not be parsed to a number or records on myabudhabi.net does not contain coordinates");
+                    qrTestResult.AddMessage("Notice: Coordinate values could not be parsed to a number or records on myabudhabi.net does not contain coordinates");
+                    qrTestResult.HasCoordinates = false;
                 }
                 else
                 {
@@ -137,6 +223,7 @@ namespace norplan.adm.qrlib
                     ProjectionInfo pSRSTo = KnownCoordinateSystems.Projected.World.WebMercator;
                     Reproject.ReprojectPoints(mPoints, new double[] { 0 }, pSRSFrom, pSRSTo, 0, 1);
                     mPointGeom = new Point(mPoints[0], mPoints[1]);
+                    qrTestResult.HasCoordinates = true;
                 }
             }
 
@@ -148,29 +235,27 @@ namespace norplan.adm.qrlib
                     {
                         if (mFeature.DataRow["DISTRICTABB"].ToString().ToLower().Trim() == mAreaAbbreviation.ToLower())
                         {
-                            mSb.AppendFormat("Info: District abbreviation is correct according to coordinates: {0} ({1}){2}",
+                            qrTestResult.AddMessage(String.Format("Info: District abbreviation is correct according to coordinates: {0} ({1}){2}",
                                 mFeature.DataRow["NAMELATIN"].ToString(),
                                 mFeature.DataRow["DISTRICTABB"].ToString().ToLower(),
-                                Environment.NewLine);
+                                Environment.NewLine));
+                            qrTestResult.DistrictOk = true;
                         }
                         else
                         {
-                            mSb.AppendFormat("Error: District abbreviation is wrong according to coordinates; it is: {1} but should be {0}{2}",
+                            qrTestResult.AddMessage(String.Format("Error: District abbreviation is wrong according to coordinates; it is: {1} but should be {0}{2}",
                                 mFeature.DataRow["DISTRICTABB"].ToString().ToLower(),
                                 mAreaAbbreviation,
-                                Environment.NewLine);
+                                Environment.NewLine));
+                            qrTestResult.DistrictOk = false;
+
                         }
                         break;
                     }
                 }
             }
 
-            if (LogFile != null)
-            {
-                LogFile.Write(mSb.ToString());
-            }
-
-            return mSb.ToString();
+            return qrTestResult;
         }
 
         public static void setLogFile(string pLogFile)

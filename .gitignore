@@ -1,3 +1,6 @@
 norplan.adm.qrlib/bin/
 norplan.adm.qrlib/obj/
+packages/
+Installer/Output/
 .nuget/
+*.suo

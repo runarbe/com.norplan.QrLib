@@ -58,6 +58,34 @@ namespace norplan.adm.qrlib
             return false;
         }
 
+        /// <summary>
+        /// Loads the existing QR-codes from myabudhabi.net
+        /// </summary>
+        /// <returns>A retobj where the data attribute is set to a <MyAbuDhabiNetCodesResponse/> object</returns>
+        public static RetObj DownloadCodes()
+        {
+            var mRetObj = new RetObj();
+            var mClient = new WebClient();
+            try
+            {
+                mClient.Headers.Add(HttpRequestHeader.Accept, "text/json");
+                var mJson = mClient.DownloadString("http://myabudhabi.net/getcodes.php");
+                mRetObj.Data = JsonConvert.DeserializeObject<MyAbuDhabiNetCodesResponse>(mJson);
+                mRetObj.SetSuccess();
+            }
+            catch (System.Net.WebException ex)
+            {
+                mRetObj.SetError();
+                mRetObj.AddMessage("Error: " + ex.Status.ToString());
+            }
+            catch (Exception ex)
+            {
+                mRetObj.SetError();
+                mRetObj.AddMessage("Error: " + ex.Message);
+            }
+            return mRetObj;
+        }
+
         public static RetObj DownloadLandingPage(this string pQRCode)
         {
             var mRetObj = new RetObj();
@@ -115,6 +143,7 @@ namespace norplan.adm.qrlib
             {
                 qrTestResult.AddMessage("Error: QR code has wrong structure for ANS sign: " + (mRegex.Groups.Count - 1) + " parts, should be 6");
                 qrTestResult.StructureOk = false;
+                qrTestResult.HasIssue = true;
                 qrTestResult.SignType = QrTestResult.TypeOfSign.Unknown;
             }
             else
@@ -130,15 +159,16 @@ namespace norplan.adm.qrlib
                 mAUSNumber = mRegex.Groups[6].ToString();
             }
             
-            // Check for existence of QR-code in processed batch (or batch + all, if loaded from myabudhabi.net)
-            if (checkForDuplicates == true && QRCodes.Contains(qrCode))
+            // Check for existence of QR-code in processed batch
+            if (checkForDuplicates == true && QRCodes.Contains(qrCode.Trim().ToLower()))
             {
                 qrTestResult.AddMessage("QR-code already exists (duplicate): " + qrCode);
                 qrTestResult.IsDuplicate = true;
+                qrTestResult.HasIssue = true;
             }
             else
             {
-                QRCodes.Add(qrCode);
+                QRCodes.Add(qrCode.Trim().ToLower());
                 qrTestResult.IsDuplicate = false;
             }
 
@@ -147,6 +177,7 @@ namespace norplan.adm.qrlib
             {
                 qrTestResult.AddMessage("Error: base URL or municipality");
                 qrTestResult.UriOk = false;
+                qrTestResult.HasIssue = true;
             }
             else
             {
@@ -159,6 +190,7 @@ namespace norplan.adm.qrlib
             {
                 qrTestResult.AddMessage("Error: QR Code contains spaces");
                 qrTestResult.SpacesOk = false;
+                qrTestResult.HasIssue = true;
             }
             else
             {
@@ -177,6 +209,7 @@ namespace norplan.adm.qrlib
                     {
                         qrTestResult.AddMessage("Notice: The QR-code does not exist on myabudhabi.net");
                         qrTestResult.IsOnline = QrTestResult.OnlineStatus.Unavailable;
+                        qrTestResult.HasIssue = true;
                     }
                     else
                     {
@@ -215,6 +248,7 @@ namespace norplan.adm.qrlib
                 {
                     qrTestResult.AddMessage("Notice: Coordinate values could not be parsed to a number or records on myabudhabi.net does not contain coordinates");
                     qrTestResult.HasCoordinates = false;
+                    qrTestResult.HasIssue = true;
                 }
                 else
                 {
@@ -248,7 +282,7 @@ namespace norplan.adm.qrlib
                                 mAreaAbbreviation,
                                 Environment.NewLine));
                             qrTestResult.DistrictOk = false;
-
+                            qrTestResult.HasIssue = true;
                         }
                         break;
                     }
